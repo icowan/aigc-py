@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse
 from langchain.chat_models import ChatAnthropic, ChatOpenAI
 
 from app.config.dependencies import get_query_token, get_token_header
-from app.middleware.jwt_middleware import JWTAuthenticationBackend
+# from app.middleware.jwt_middleware import JWTAuthenticationBackend
 from app.models.base import engine, Base, SessionLocal
 from app.repository.repository import get_repository
 from app.routes import datasets, assistants, chat, models
@@ -42,7 +42,7 @@ Base.metadata.create_all(bind=engine)
 
 middleware = [
     # Middleware(AuthenticationMiddleware, backend=BasicAuthBackend())
-    Middleware(JWTAuthenticationBackend)
+    # Middleware(JWTAuthenticationBackend)
 ]
 
 
@@ -117,10 +117,10 @@ if __name__ == "__main__":
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=args.allowed_origins,
-        allow_credentials=args.allow_credentials,
-        allow_methods=args.allowed_methods,
-        allow_headers=args.allowed_headers,
+        # allow_origins=args.allowed_origins,
+        # allow_credentials=args.allow_credentials,
+        # allow_methods=args.allowed_methods,
+        # allow_headers=args.allowed_headers,
     )
     app.middleware(middleware)
 

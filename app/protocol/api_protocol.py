@@ -6,6 +6,14 @@ from langchain_core.messages import ChatMessage
 from pydantic import BaseModel, Field
 
 
+class Response(BaseModel):
+    code: int = 200
+    message: str = ''
+    data: any = None
+    traceId: str = ''
+    success: bool = False
+
+
 class ChatCompletionResponseChoice:
     index: int
     message: ChatMessage
