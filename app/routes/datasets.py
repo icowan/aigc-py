@@ -1,13 +1,13 @@
 import os
 import uuid
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, Form, UploadFile, File, HTTPException, Request
 from requests import Session
 
 from app.models.base import get_db
-from app.models.datasets import Datasets
-from app.protocol.datasets_protocol import DatasetsResponse, DatasetCreateRequest
+from app.models.datasets import Datasets, DatasetSegments
+from app.protocol.datasets_protocol import DatasetsResponse, DatasetCreateRequest, DatasetResponse
 from app.repository.repository import Repository, get_repository
 
 router = APIRouter(
@@ -22,6 +22,13 @@ router = APIRouter(
 async def create_dataset(request: Request, name: str = Form(...), format_type: str = "txt", split_type: str = '\n\n',
                          split_max: int = 1000, remark: Optional[str] = Form(None), file: UploadFile = File(...),
                          db: Session = Depends(get_db)):
+    store: Repository = get_repository(db)
+    # store: Repository = request.state.store
+
+    dataset = store.datasets().find_by_name(name)
+    if dataset:
+        raise HTTPException(status_code=400, detail="Dataset name already exists.")
+
     # 获取文件大小，单位为字节
     file_size = file.file.seek(0, 2)  # 移动到文件的末尾，返回文件大小
     file.file.seek(0)  # 重置文件指针到开始位置，以便后续读取
@@ -37,25 +44,29 @@ async def create_dataset(request: Request, name: str = Form(...), format_type: s
     content = await file.read()
     content_str = content.decode("utf-8")
     # 如果format_type == 'txt'，则按照split_type和split_max进行切割
+    content_list = []
     if format_type == 'txt':
         content_list = content_str.split(split_type)
 
-    sample_count = len(content_list)
     # 创建数据集
     tenant_id = request.state.tenant_id
     creator_email = request.state.email
-    store: Repository = get_repository(db)
-    # store: Repository = request.state.store
+
     uid = f"dataset-{uuid.uuid4()}"
     dataset = store.datasets().create(
-        dataset=Datasets(name=name, sample_count=len(content_list), uuid=uid, remark=remark, format_type=format_type,
-                         creator_email=creator_email,
-                         tenant_id=tenant_id, type="text",
-                         ))
-    print(dataset)
-    # 保存切割好的内容到数据库
+        Datasets(name=name, segment_count=len(content_list), uuid=uid, remark=remark, format_type=format_type,
+                 creator_email=creator_email,
+                 tenant_id=tenant_id,
+                 ))
+    segment_list = []
+    for i, content in enumerate(content_list):
+        segment_list.append(
+            DatasetSegments(uuid=f"segment-{uuid.uuid4()}", dataset_id=dataset.id, content=content,
+                            word_count=len(content.split())))
 
-    return {"message": "Dataset created successfully"}
+    store.dataset_segments().add_segments(segment_list)
+
+    return DatasetResponse(uuid=uid, name=name)
 
 
 @router.put("/update", tags=["datasets"])
@@ -69,8 +80,16 @@ async def delete_dataset(datasetId: str):
 
 
 @router.get("/list", tags=["datasets"])
-async def datasets_list(page: int = 1, page_size: int = 10,
-                        dataset_type: str = "all",
-                        format_type: str = "all",
+async def datasets_list(request: Request, page: int = 1, page_size: int = 10,
                         name: str = "", db: Session = Depends(get_db)):
-    return {"message": "Dataset list"}
+    tenant_id = request.state.tenant_id
+    store: Repository = get_repository(db)
+    datasets, total = store.datasets().list(tenant_id, name, page, page_size)
+    dataset_result: List[DatasetResponse] = []
+    for dataset in datasets:
+        dataset_result.append(DatasetResponse(uuid=dataset.uuid, name=dataset.name, remark=dataset.remark,
+                                              segment_count=dataset.segment_count, creator_email=dataset.creator_email,
+                                              format_type=dataset.format_type, split_type=dataset.split_type,
+                                              split_max=dataset.split_max))
+
+    return DatasetsResponse(datasets=dataset_result, total=total, page=page, page_size=page_size)

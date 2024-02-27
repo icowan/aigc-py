@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 
-from app.models.datasets import Datasets
+from app.models.datasets import Datasets, DatasetSegments
 
 
 class DatasetsRepository:
@@ -10,10 +10,6 @@ class DatasetsRepository:
         """Construct a new repository for datasets."""
         self.db = db
 
-    def get(self, dataset_id):
-        """Get a dataset by its ID."""
-        return self.db.get(dataset_id)
-
     def create(self, dataset: Datasets):
         """Create a new dataset."""
         db = self.db
@@ -21,3 +17,16 @@ class DatasetsRepository:
         db.commit()
         db.refresh(dataset)
         return dataset
+
+    def find_by_name(self, name: str):
+        """Find a dataset by name."""
+        return self.db.query(Datasets).filter(Datasets.name == name).first()
+
+    def list(self, tenant_id: int, name: str = '', page: int = 1, page_size: int = 10):
+        """List datasets."""
+        query = self.db.query(Datasets).filter(Datasets.tenant_id == tenant_id)
+        if name:
+            query = query.filter(Datasets.name.like(f"%{name}%"))
+        total = query.count()
+        datasets = query.offset((page - 1) * page_size).limit(page_size).all()
+        return datasets, total

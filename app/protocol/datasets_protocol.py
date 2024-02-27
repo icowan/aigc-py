@@ -16,6 +16,25 @@ class DatasetCreateRequest(BaseModel):
     split_max: int = 1000
 
 
+class DatasetResponse(BaseModel):
+    """Create dataset response model."""
+    uuid: str
+    """数据集名称"""
+    name: str
+    """数据集备注"""
+    remark: str = ""
+    """块数量"""
+    segment_count: int = 0
+    """创建人邮箱"""
+    creator_email: str = ""
+    """数据集类型"""
+    format_type: str = 'txt'
+    """切割方式"""
+    split_type: str = '\n\n'
+    """切割的最大数据块"""
+    split_max: int = 1000
+
+
 class DatasetsRequest:
     page: int = 1
     page_size: int = 10
@@ -24,32 +43,8 @@ class DatasetsRequest:
     name: str = ""
 
 
-class DatasetsSample(BaseModel):
-    id: str
-    dataset_id: str
-    title: str
-    system: str
-    instruction: str
-    input: str
-    output: str
-    created_at: str
-    updated_at: str
-
-
-class Dataset(BaseModel):
-    id: str
-    name: str
-    remark: str
-    sample_count: int
-    dataset_type: str
-    format: str
-    created_at: str
-    updated_at: str
-    dataset_sample: List[DatasetsSample]
-
-
 class DatasetsResponse(BaseModel):
-    datasets: List[Dataset]
+    datasets: List[DatasetResponse]
     total: int
     page: int
     page_size: int

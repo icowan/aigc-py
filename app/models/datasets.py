@@ -9,22 +9,24 @@ class Datasets(Base):
     """
     数据集表
     """
-    __tablename__ = "datasets"
+    __tablename__ = "datasets_v0"
 
     id = Column(Integer, primary_key=True)
-    uuid = Column(String, index=True, unique=True, comment="UUID")
-    name = Column(String, unique=True, index=True, comment="名称")
-    remark = Column(String, nullable=True, comment="描述")
+    uuid = Column(String(64), index=True, unique=True, comment="UUID")
+    name = Column(String(64), unique=True, index=True, comment="名称")
+    remark = Column(String(500), nullable=True, comment="描述")
     segment_count = Column(Integer, default=0, comment="样本数量")
-    creator_email = Column(String, nullable=False, index=True, comment="创建人邮箱")
+    creator_email = Column(String(64), nullable=False, index=True, comment="创建人邮箱")
     tenant_id = Column(Integer, nullable=False, index=True, comment="租户ID")
-    type = Column(String, nullable=False, index=True, comment="数据集类型")
-    format_type = Column(String, name="format", nullable=True, default="alpaca", comment="数据集类型")
+    # type = Column(String(12), nullable=False, index=True, comment="数据集类型")
+    format_type = Column(String(12), name="format", nullable=True, default="alpaca", comment="数据集类型")
+    split_type = Column(String(12), nullable=True, default="\n\n", comment="切割方式")
+    split_max = Column(Integer, nullable=True, default=1000, comment="切割的最大数据块")
     created_at = Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment="创建时间")
     updated_at = Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment="更新时间")
     deleted_at = Column(DateTime, nullable=True, comment="删除时间")
 
-    Segments = relationship("DatasetSegments", back_populates="owner")
+    Segments = relationship("DatasetSegments", back_populates="Owner")
     # Annotations = relationship("DataAnnotation", back_populates="dataset")
 
 
@@ -36,9 +38,9 @@ class DatasetSegments(Base):
 
     id = Column(Integer, primary_key=True)
     uuid = Column(String(64), index=True, unique=True, comment="UUID")
-    dataset_id = Column(Integer, ForeignKey("datasets.id"), nullable=False, index=True, comment="数据集ID")
+    dataset_id = Column(Integer, ForeignKey("datasets_v0.id"), nullable=False, index=True, comment="数据集ID")
     content = Column(Text, nullable=False, comment="内容")
-    word_count = Column(Integer, nullable=False, comment="字数")
+    word_count = Column(Integer, nullable=True, default=0, comment="字数")
     created_at = Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment="创建时间")
     updated_at = Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment="更新时间")
     deleted_at = Column(DateTime, nullable=True, comment="删除时间")
