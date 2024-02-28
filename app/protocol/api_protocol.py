@@ -1,35 +1,29 @@
-import time
-from typing import List, Optional, Literal
+import typing
 
-import shortuuid
-from langchain_core.messages import ChatMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
-class Response(BaseModel):
-    code: int = 200
+class ErrorResponse(BaseModel):
+    """Error response model"""
+    code: int = 500
+    """Error code"""
     message: str = ''
-    data: any = None
+    """Error message"""
     traceId: str = ''
+    """Trace ID"""
     success: bool = False
+    """Success flag"""
 
 
-class ChatCompletionResponseChoice:
-    index: int
-    message: ChatMessage
-    finish_reason: Optional[Literal["stop", "length"]] = None
-
-
-class UsageInfo:
-    prompt_tokens: int = 0
-    total_tokens: int = 0
-    completion_tokens: Optional[int] = 0
-
-
-class ChatCompletionResponse(BaseModel):
-    id: str = Field(default_factory=lambda: f"chatcmpl-{shortuuid.random()}")
-    object: str = "chat.completion"
-    created: int = Field(default_factory=lambda: int(time.time()))
-    model: str
-    choices: List[ChatCompletionResponseChoice]
-    usage: UsageInfo
+class SuccessResponse(BaseModel):
+    """Success response model"""
+    code: int = 200
+    """Success code"""
+    message: str = ''
+    """Success message"""
+    data: typing.Any = None
+    """Success data"""
+    traceId: str = ''
+    """Trace ID"""
+    success: bool = True
+    """Success flag"""

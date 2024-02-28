@@ -13,14 +13,14 @@ class Repository:
         self._datasets = DatasetsRepository(db)
         self._dataset_segments = DatasetSegmentsRepository(db)
 
-    def datasets(self):
+    def datasets(self) -> DatasetsRepository:
         """Return the datasets repository."""
         return self._datasets
 
-    def dataset_segments(self):
+    def dataset_segments(self) -> DatasetSegmentsRepository:
         """Return the dataset segments repository."""
         return self._dataset_segments
 
 
-def get_repository(db: Session):
+def get_repository(db: Session) -> Repository:
     return Repository(db)

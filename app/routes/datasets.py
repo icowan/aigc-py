@@ -7,6 +7,7 @@ from requests import Session
 
 from app.models.base import get_db
 from app.models.datasets import Datasets, DatasetSegments
+from app.protocol.api_protocol import ErrorResponse, SuccessResponse
 from app.protocol.datasets_protocol import DatasetsResponse, DatasetCreateRequest, DatasetResponse
 from app.repository.repository import Repository, get_repository
 
@@ -69,14 +70,24 @@ async def create_dataset(request: Request, name: str = Form(...), format_type: s
     return DatasetResponse(uuid=uid, name=name)
 
 
-@router.put("/update", tags=["datasets"])
+@router.put("/{datasetId}", tags=["datasets"])
 async def update_dataset():
-    return {"message": "Dataset updated successfully"}
+    return
 
 
-@router.delete("/delete/{datasetId}", tags=["datasets"])
-async def delete_dataset(datasetId: str):
-    return {"message": "Dataset deleted successfully"}
+@router.delete("/{datasetId}", tags=["datasets"])
+async def delete_dataset(request: Request, datasetId: str, db: Session = Depends(get_db)):
+    tenant_id = request.state.tenant_id
+    store: Repository = get_repository(db)
+
+    dataset = store.datasets().find_by_uuid(tenant_id, datasetId)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found.")
+
+    if store.datasets().delete(dataset) is False:
+        raise HTTPException(status_code=500, detail="Failed to delete dataset.")
+
+    return
 
 
 @router.get("/list", tags=["datasets"])
@@ -84,6 +95,7 @@ async def datasets_list(request: Request, page: int = 1, page_size: int = 10,
                         name: str = "", db: Session = Depends(get_db)):
     tenant_id = request.state.tenant_id
     store: Repository = get_repository(db)
+    # 获取数据集列表
     datasets, total = store.datasets().list(tenant_id, name, page, page_size)
     dataset_result: List[DatasetResponse] = []
     for dataset in datasets:

@@ -3,18 +3,21 @@ import time
 from importlib import metadata
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response, HTTPException
 from fastapi.responses import RedirectResponse
 from langserve import APIHandler, add_routes
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from langchain.chat_models import ChatAnthropic, ChatOpenAI
 
 from app.config.dependencies import get_query_token, get_token_header
+from app.middleware.trace_middleware import TraceMiddleware
 # from app.middleware.jwt_middleware import JWTAuthenticationBackend
 from app.models.base import engine, Base, SessionLocal
+from app.protocol.api_protocol import ErrorResponse
 from app.repository.repository import get_repository
 from app.routes import datasets, assistants, chat, models
 
@@ -40,10 +43,29 @@ app.include_router(models.router, prefix="/api/models")
 
 Base.metadata.create_all(bind=engine)
 
-middleware = [
-    # Middleware(AuthenticationMiddleware, backend=BasicAuthBackend())
-    # Middleware(JWTAuthenticationBackend)
-]
+
+class CustomMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+
+        print(response)
+
+        # 确保我们只修改 JSON 响应
+        if isinstance(response, JSONResponse):
+            # 这里假设原始响应内容是 JSON 格式
+            original_data = response.body.decode("utf-8")
+
+            # 对原始响应内容进行处理，这里只是简单地添加了一些文本
+            modified_data = original_data + " - Modified by middleware"
+
+            # 创建一个新的响应对象来替换原始响应
+            new_response = Response(content=modified_data, media_type="application/json")
+
+            # 将新的响应对象返回给客户端
+            return new_response
+
+        # 如果不是 JSON 响应，直接返回原始响应
+        return response
 
 
 @app.middleware("http")
@@ -52,24 +74,6 @@ async def add_process_time_header(request: Request, call_next):
     response = await call_next(request)
     process_time = time.time() - start_time
     response.headers["X-Process-Time"] = str(process_time)
-    return response
-
-
-@app.middleware("http")
-async def db_session_middleware(request: Request, call_next):
-    response = Response("Internal server error", status_code=500)
-    try:
-        request.state.db = SessionLocal()
-        request.state.store = get_repository(request.state.db)
-        response = await call_next(request)
-    finally:
-        request.state.db.close()
-    return response
-
-
-@app.middleware("http")
-async def add_tracer_middleware(request: Request, call_next):
-    response = await call_next(request)
     return response
 
 
@@ -88,6 +92,29 @@ async def add_auth_middleware(request: Request, call_next):
     request.state.email = "admin@admin.com"
     response = await call_next(request)
     return response
+
+
+@app.middleware("http")
+async def db_session_middleware(request: Request, call_next):
+    response = Response("Internal server error", status_code=500)
+    try:
+        request.state.db = SessionLocal()
+        request.state.store = get_repository(request.state.db)
+        response = await call_next(request)
+    finally:
+        request.state.db.close()
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=200,
+        content=ErrorResponse(
+            message=exc.detail,
+            code=exc.status_code,
+        ).dict(),
+    )
 
 
 @app.get("/docs")
@@ -122,7 +149,7 @@ if __name__ == "__main__":
         # allow_methods=args.allowed_methods,
         # allow_headers=args.allowed_headers,
     )
-    app.middleware(middleware)
+    app.add_middleware(TraceMiddleware)
 
     import uvicorn
 
