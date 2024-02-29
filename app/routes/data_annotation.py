@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.models.base import get_db
-from app.models.data_annotation import DataAnnotation, DataAnnotationSegments, DataAnnotationStatus
+from app.models.data_annotation import DataAnnotation, DataAnnotationSegments, DataAnnotationStatus, DataAnnotationType
 from app.models.datasets import Datasets
 from app.protocol.api_protocol import SuccessResponse
 from app.protocol.data_annotation_protocol import DataAnnotationResponse, AnnotationCreateRequest, \
@@ -19,6 +19,33 @@ router = APIRouter(
     # dependencies=[Depends(get_token_header)],
     responses={404: {"description": "Not found"}},
 )
+
+
+# 导出标注后的数据
+@router.get("/task/{annotationId}/export/{segmentType}", tags=["annotation"], description="导出标注任务数据")
+async def export_annotation(request: Request, annotationId: str, segmentType: str = 'all',
+                            db: Session = Depends(get_db)):
+    tenant_id = request.state.tenant_id
+    store: Repository = get_repository(db)
+    data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=False)
+    if not data_annotation:
+        raise HTTPException(status_code=404, detail="Annotation not found.")
+
+    if data_annotation.status != DataAnnotationStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="The annotation task is not completed, cannot be exported.")
+
+    if segmentType != 'all':
+        segments = await store.data_annotation().get_annotation_segments(data_annotation.id,
+                                                                         status=DataAnnotationStatus(
+                                                                             segmentType.upper()))
+    else:
+        segments: List[DataAnnotationSegments] = await store.data_annotation().get_annotation_segments(
+            data_annotation.id)
+
+    for segment in segments:
+        print(segment.segment_content)
+
+    return SuccessResponse()
 
 
 @router.delete("/task/{annotationId}/delete", tags=["annotation"], description="删除标注任务")
@@ -72,7 +99,7 @@ async def clean_annotation(request: Request, annotationId: str, db: Session = De
     if not data_annotation:
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
-    if data_annotation.status != DataAnnotationStatus.PENDING:
+    if data_annotation.status != DataAnnotationStatus.PENDING and data_annotation.status != DataAnnotationStatus.PROCESSING:
         raise HTTPException(status_code=400, detail="The annotation task is not pending, cannot be cleaned.")
 
     data_annotation.status = DataAnnotationStatus.CLEANED
@@ -324,13 +351,40 @@ async def abandoned_annotation(request: Request, annotationId: str, annotationSe
 async def detect_annotation(request: Request, annotationId: str, db: Session = Depends(get_db)):
     tenant_id = request.state.tenant_id
     store: Repository = get_repository(db)
-    data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=False)
+    data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, segments=True)
     if not data_annotation:
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
     if data_annotation.status != DataAnnotationStatus.COMPLETED:
         raise HTTPException(status_code=400, detail="The annotation task is not completed.")
+
     # 获取所有已标注后的内容
+    if DataAnnotationType(data_annotation.annotation_type) == DataAnnotationType.FAQ:
+        # 获取所有已标注后的内容
+        all_query = []
+        all_intents = []
+        all_answers = []
+        indices = []
+        i = 0
+        for segment in data_annotation.Segments:
+            questions = segment.input[1:-1].split(',')
+            questions = [q.strip() for q in questions]
+            intents = segment.intent
+            answers = segment.output
+            for q in questions:
+                all_query.append(q)
+            for _ in range(len(questions)):
+                all_intents.append(intents)
+                all_answers.append(answers)
+                indices.append(i)
+            i += 1
+
+        # SBERT模型进行文本相似度比较
+        # model = SentenceTransformer(model_path)
+        # sentence_embeddings = model.encode(all_query)
+        # cosine_score = cosine_similarity(sentence_embeddings)
+        # similar_indices = np.argwhere(cosine_score >= similarity_threshold)
+
     # 根据标内容的类型生成对应的文件
     # 异步调用模型对内容进行检测
 

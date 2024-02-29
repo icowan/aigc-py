@@ -20,6 +20,11 @@ class DataAnnotationStatus(str, enum.Enum):
     CLEANED = "cleaned"
 
 
+class DataAnnotationSegmentType(str, enum.Enum):
+    TRAIN = "train"
+    TEST = "test"
+
+
 class DataAnnotation(Base):
     """
     标注任务表
@@ -67,6 +72,7 @@ class DataAnnotationSegments(Base):
     intent = Column(String(32), nullable=True, comment="标注意图")
     output = Column(String(2000), nullable=True, comment="输出结果")
     status = Column(String(12), index=True, comment="标注状态")
+    segment_type = Column(String(12), index=True, default="train", comment="样本类型")
     creator_email = Column(String(32), nullable=True, comment="创建人邮箱")
     created_at = Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment="创建时间")
     updated_at = Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment="更新时间")

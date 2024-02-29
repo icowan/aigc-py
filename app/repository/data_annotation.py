@@ -44,12 +44,15 @@ class DataAnnotationRepository:
             self.db.query(DataAnnotation).filter(DataAnnotation.id == id).update(update_data)
         return
 
-    async def get_by_uuid(self, tenant_id: int, uid: str, datasets: bool = False) -> DataAnnotation:
+    async def get_by_uuid(self, tenant_id: int, uid: str, datasets: bool = False,
+                          segments: bool = False) -> DataAnnotation:
         """Find a data annotation by UUID."""
         query = self.db.query(DataAnnotation).filter(DataAnnotation.tenant_id == tenant_id, DataAnnotation.uuid == uid,
                                                      DataAnnotation.deleted_at == None)
         if datasets:
             query = query.options(joinedload(DataAnnotation.Datasets))
+        if segments:
+            query = query.options(joinedload(DataAnnotation.Segments))
         return query.first()
 
     async def get_segment_by_sn(self, dataset_id: int, serial_number: int) -> Type[DatasetSegments] | None:
@@ -57,7 +60,8 @@ class DataAnnotationRepository:
         return self.db.query(DatasetSegments).filter(DatasetSegments.dataset_id == dataset_id,
                                                      DatasetSegments.serial_number == serial_number).first()
 
-    async def get_annotation_tasks(self, tenant_id: int, status: str = None, datasets: bool = False, page: int = 1, page_size: int = 10) -> (
+    async def get_annotation_tasks(self, tenant_id: int, status: str = None, datasets: bool = False, page: int = 1,
+                                   page_size: int = 10) -> (
             List[Type[DataAnnotation]], int):
         """获取标注任务列表"""
         query = self.db.query(DataAnnotation).filter(DataAnnotation.tenant_id == tenant_id,
@@ -138,3 +142,14 @@ class DataAnnotationRepository:
         self.db.query(DataAnnotation).filter(DataAnnotation.id == data_annotation_id).update(update_data)
         self.db.commit()
         return await self.get(data_annotation_id)
+
+    async def get_annotation_segments(self, annotation_id: int, status: DataAnnotationStatus = None) -> (
+            List[DataAnnotationSegments], int):
+        """Get segments by annotation ID."""
+        query = self.db.query(DataAnnotationSegments).filter(DataAnnotationSegments.data_annotation_id == annotation_id,
+                                                             DataAnnotationSegments.deleted_at == None,
+                                                             DataAnnotationSegments.status == DataAnnotationStatus.COMPLETED)
+        if status:
+            query = query.filter(DataAnnotationSegments.status == status)
+        segments = query.order_by(DataAnnotationSegments.id).all()
+        return segments, len(segments)
