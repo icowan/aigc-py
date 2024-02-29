@@ -3,6 +3,13 @@ import typing
 from pydantic import BaseModel
 
 
+class ErrorException(Exception):
+    def __init__(self, message: str = '', code: int = 500):
+        self.message = message
+        self.code = code
+        super().__init__(self.message)
+
+
 class ErrorResponse(BaseModel):
     """Error response model"""
     code: int = 500

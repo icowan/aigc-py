@@ -26,8 +26,8 @@ class Datasets(Base):
     updated_at = Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment="更新时间")
     deleted_at = Column(DateTime, nullable=True, comment="删除时间")
 
-    Segments = relationship("DatasetSegments", back_populates="Owner")
-    # Annotations = relationship("DataAnnotation", back_populates="dataset")
+    Segments = relationship("DatasetSegments", back_populates="Datasets")
+    Annotations = relationship("DataAnnotation", back_populates="Datasets")
 
 
 class DatasetSegments(Base):
@@ -39,10 +39,11 @@ class DatasetSegments(Base):
     id = Column(Integer, primary_key=True)
     uuid = Column(String(64), index=True, unique=True, comment="UUID")
     dataset_id = Column(Integer, ForeignKey("datasets_v0.id"), nullable=False, index=True, comment="数据集ID")
+    serial_number = Column(Integer, nullable=False, index=True, comment="序号")
     content = Column(Text, nullable=False, comment="内容")
     word_count = Column(Integer, nullable=True, default=0, comment="字数")
     created_at = Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment="创建时间")
     updated_at = Column(DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment="更新时间")
     deleted_at = Column(DateTime, nullable=True, comment="删除时间")
 
-    Owner = relationship("Datasets", back_populates="Segments")
+    Datasets = relationship("Datasets", back_populates="Segments")

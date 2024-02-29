@@ -10,13 +10,13 @@ class DatasetCreateRequest(BaseModel):
     """数据集名称"""
     remark: str
     """数据集备注"""
-    format_type: str = 'txt'
+    formatType: str = 'txt'
     """数据集类型"""
     file: UploadFile = File(...)
     """数据集文件"""
-    split_type: str = '\n\n'
+    splitType: str = '\n\n'
     """切割方式"""
-    split_max: int = 1000
+    splitMax: int = 1000
     """切割的最大数据块"""
 
 
@@ -28,15 +28,15 @@ class DatasetResponse(BaseModel):
     """数据集名称"""
     remark: str = ""
     """数据集备注"""
-    segment_count: int = 0
+    segmentCount: int = 0
     """块数量"""
-    creator_email: str = ""
+    creatorEmail: str = ""
     """创建人邮箱"""
-    format_type: str = 'txt'
+    formatType: str = 'txt'
     """数据集类型"""
-    split_type: str = '\n\n'
+    splitType: str = '\n\n'
     """切割方式"""
-    split_max: int = 1000
+    splitMax: int = 1000
     """切割的最大数据块"""
 
 
@@ -44,11 +44,11 @@ class DatasetsRequest:
     """Datasets request model."""
     page: int = 1
     """页码"""
-    page_size: int = 10
+    pageSize: int = 10
     """每页数量"""
-    dataset_type: str = "all"
+    datasetType: str = "all"
     """数据集类型"""
-    format_type: str = "all"
+    formatType: str = "all"
     """数据集格式"""
     name: str = ""
     """数据集名称"""
@@ -56,11 +56,11 @@ class DatasetsRequest:
 
 class DatasetsResponse(BaseModel):
     """Datasets response model."""
-    datasets: List[DatasetResponse]
+    list: List[DatasetResponse]
     """数据集列表"""
-    total: int
+    total: int = 0
     """总数"""
-    page: int
+    page: int = 1
     """页码"""
-    page_size: int
+    pageSize: int = 10
     """每页数量"""

@@ -19,7 +19,7 @@ from app.middleware.trace_middleware import TraceMiddleware
 from app.models.base import engine, Base, SessionLocal
 from app.protocol.api_protocol import ErrorResponse
 from app.repository.repository import get_repository
-from app.routes import datasets, assistants, chat, models
+from app.routes import datasets, assistants, chat, models, data_annotation
 
 # from rag_conversation import chain as rag_conversation_chain
 
@@ -36,7 +36,9 @@ app = FastAPI(
     ]
 )
 
-app.include_router(datasets.router, prefix="/v0")
+app.include_router(datasets.router, prefix="/mgr")
+app.include_router(data_annotation.router, prefix="/mgr")
+
 app.include_router(assistants.router, prefix="/v0")
 app.include_router(chat.router, prefix="/v0")
 app.include_router(models.router, prefix="/api/models")
@@ -80,7 +82,8 @@ async def add_process_time_header(request: Request, call_next):
 @app.middleware("http")
 async def add_auth_middleware(request: Request, call_next):
     auth = request.headers.get("Authorization")
-    if auth is None:
+    x_auth = request.headers.get("X-Token")
+    if auth is None and x_auth is None:
         return JSONResponse(status_code=401, content={"message": "Unauthorized"})
     # db = request.state.db
     # jwt = JWTAuthenticationBackend()

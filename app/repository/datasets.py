@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import List
 
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.models.datasets import Datasets, DatasetSegments
@@ -13,7 +14,7 @@ class DatasetsRepository:
         """Construct a new repository for datasets."""
         self.db = db
 
-    def create(self, dataset: Datasets) -> Datasets:
+    async def create(self, dataset: Datasets) -> Datasets:
         """Create a new dataset."""
         db = self.db
         db.add(dataset)
@@ -21,32 +22,32 @@ class DatasetsRepository:
         db.refresh(dataset)
         return dataset
 
-    def find_by_name(self, name: str) -> Datasets:
+    async def find_by_name(self, name: str) -> Datasets:
         """Find a dataset by name."""
         return self.db.query(Datasets).filter(Datasets.name == name, Datasets.deleted_at == None).first()
 
-    def list(self, tenant_id: int, name: str = '', page: int = 1, page_size: int = 10) -> (List[Datasets], int):
+    async def list(self, tenant_id: int, name: str = '', page: int = 1, page_size: int = 10) -> (List[Datasets], int):
         """List datasets."""
         query = self.db.query(Datasets).filter(Datasets.tenant_id == tenant_id, Datasets.deleted_at == None)
         if name:
             query = query.filter(Datasets.name.like(f"%{name}%"))
         total = query.count()
-        datasets = query.offset((page - 1) * page_size).limit(page_size).all()
+        datasets = query.order_by(desc(Datasets.created_at)).offset((page - 1) * page_size).limit(page_size).all()
         return datasets, total
 
-    def find_by_uuid(self, tenant_id: int, uuid: str) -> Datasets:
+    async def find_by_uuid(self, tenant_id: int, uuid: str) -> Datasets:
         """Find a dataset by UUID."""
         return self.db.query(Datasets).filter(Datasets.tenant_id == tenant_id, Datasets.uuid == uuid,
                                               Datasets.deleted_at == None).first()
 
-    def delete_by_uuid(self, tenant_id: int, uuid: str) -> bool:
+    async def delete_by_uuid(self, tenant_id: int, uuid: str) -> bool:
         """Delete a dataset by UUID."""
         dataset = self.find_by_uuid(tenant_id, uuid)
         self.db.delete(dataset)
         self.db.commit()
         return True
 
-    def delete(self, dataset: Datasets, unscoped: bool = False) -> bool:
+    async def delete(self, dataset: Datasets, unscoped: bool = False) -> bool:
         """Delete a dataset."""
         if unscoped:
             """需要去除关联关系"""
@@ -55,3 +56,17 @@ class DatasetsRepository:
             dataset.deleted_at = datetime.now()
         self.db.commit()
         return True
+
+    async def update(self, id: int, dataset: Datasets) -> Datasets:
+        """Update a dataset."""
+        update_data = {
+            "name": dataset.name,
+            "remark": dataset.remark,
+            "format_type": dataset.format_type,
+            "split_type": dataset.split_type,
+            "updated_at": datetime.now(),
+            "segment_count": dataset.segment_count
+        }
+        self.db.query(Datasets).filter(Datasets.id == id).update(update_data)
+        self.db.commit()
+        return await self.get(id)
