@@ -29,6 +29,8 @@ async def create_dataset(request: Request, name: str = Form(...), formatType: st
     store: Repository = get_repository(db)
     # store: Repository = request.state.store
 
+    split_type = splitType.replace("\\n", "\n")
+
     dataset = await store.datasets().find_by_name(name)
     if dataset:
         raise HTTPException(status_code=400, detail="Dataset name already exists.")
@@ -51,7 +53,7 @@ async def create_dataset(request: Request, name: str = Form(...), formatType: st
     # 如果format_type == 'txt'，则按照split_type和split_max进行切割
     content_list = []
     if formatType == 'txt':
-        content_list = content_str.split(splitType)
+        content_list = content_str.split(split_type)
 
     # 创建数据集
     tenant_id = request.state.tenant_id
@@ -63,7 +65,7 @@ async def create_dataset(request: Request, name: str = Form(...), formatType: st
             Datasets(name=name, segment_count=len(content_list), uuid=uid, remark=remark, format_type=formatType,
                      creator_email=creator_email,
                      tenant_id=tenant_id,
-                     split_type=splitType,
+                     split_type=split_type,
                      ))
     except Exception as e:
         logger.error(f"Failed to create dataset: {e}")
@@ -82,21 +84,18 @@ async def create_dataset(request: Request, name: str = Form(...), formatType: st
                             word_count=len(content.split()), serial_number=sn))
         sn += 1
     try:
-        uid = f"dataset-{uuid.uuid4()}"
-        dataset = await store.datasets().create(
-            Datasets(name=name, segment_count=len(content_list), uuid=uid, remark=remark, format_type=formatType,
-                     creator_email=creator_email,
-                     tenant_id=tenant_id,
-                     split_type=splitType,
-                     ))
         await store.dataset_segments().add_segments(segment_list)
     except Exception as e:
-        await store.datasets().delete(dataset, unscoped=True)
+        # await store.datasets().delete(dataset, unscoped=True)
         logger.error(f"Failed to create dataset: {e}")
         raise ErrorException(code=500, message=str(e))
 
     dataset.segment_count = len(segment_list)
-    await store.datasets().update(dataset.id, dataset)
+    try:
+        await store.datasets().update(dataset.id, dataset)
+    except Exception as e:
+        logger.error(f"Failed to update dataset: {e}")
+        raise ErrorException(code=500, message=str(e))
 
     return SuccessResponse(data=DatasetResponse(uuid=uid, name=name))
 
@@ -111,9 +110,11 @@ async def delete_dataset(request: Request, datasetId: str, db: Session = Depends
         logger.warn(f"Dataset {datasetId} not found.")
         raise HTTPException(status_code=404, detail="Dataset not found.")
 
-    if store.datasets().delete(dataset) is False:
-        logger.error(f"Failed to delete dataset {datasetId}.")
-        raise HTTPException(status_code=500, detail="Failed to delete dataset.")
+    try:
+        await store.datasets().delete(dataset)
+    except Exception as e:
+        logger.error(f"Failed to delete dataset: {e}")
+        raise ErrorException(code=500, message=str(e))
 
     return SuccessResponse()
 

@@ -111,10 +111,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     logger.warn(exc.detail)
     return JSONResponse(
         status_code=200,
-        content=ErrorResponse(
-            message=exc.detail,
-            code=exc.status_code,
-        ).dict(),
+        content={"code": exc.status_code, "message": exc.detail, "data": None}
     )
 
 

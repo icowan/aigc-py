@@ -53,7 +53,10 @@ class DatasetsRepository:
             """需要去除关联关系"""
             self.db.delete(dataset)
         else:
-            dataset.deleted_at = datetime.now()
+            update_data = {
+                "deleted_at": datetime.now()
+            }
+            self.db.query(Datasets).filter(Datasets.id == dataset.id).update(update_data)
         self.db.commit()
         return True
 
