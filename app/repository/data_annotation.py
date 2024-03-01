@@ -1,11 +1,12 @@
 from datetime import datetime
 from typing import Type, List
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, func
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session, joinedload
 
-from app.models.data_annotation import DataAnnotation, DataAnnotationSegments, DataAnnotationStatus
+from app.models.data_annotation import DataAnnotation, DataAnnotationSegments, DataAnnotationStatus, \
+    DataAnnotationSegmentType
 from app.models.datasets import DatasetSegments
 
 
@@ -82,11 +83,14 @@ class DataAnnotationRepository:
         return segments
 
     async def get_annotation_one_segment(self, annotation_id: int, index: int = -1,
-                                         status: DataAnnotationStatus = None) -> DataAnnotationSegments:
+                                         status: DataAnnotationStatus = None,
+                                         segment: bool = False) -> DataAnnotationSegments:
         """Get one segment by annotation ID and index."""
         query = self.db.query(DataAnnotationSegments).filter(DataAnnotationSegments.data_annotation_id == annotation_id)
         if status:
             query = query.filter(DataAnnotationSegments.status == status)
+        if segment:
+            query = query.options(joinedload(DataAnnotationSegments.Segments))
         if index == -1:
             return query.order_by(DataAnnotationSegments.id).first()
         return query.order_by(DataAnnotationSegments.id).offset(index * 1).limit(1).first()
@@ -138,18 +142,45 @@ class DataAnnotationRepository:
             "abandoned": data_annotation.abandoned,
             "remark": data_annotation.remark,
             "updated_at": datetime.now(),
+            "train_total": data_annotation.train_total,
+            "test_total": data_annotation.test_total,
+            "test_repo": data_annotation.test_repo,
         }
         self.db.query(DataAnnotation).filter(DataAnnotation.id == data_annotation_id).update(update_data)
         self.db.commit()
         return await self.get(data_annotation_id)
 
-    async def get_annotation_segments(self, annotation_id: int, status: DataAnnotationStatus = None) -> (
+    async def get_annotation_segments(self, annotation_id: int, status: List[DataAnnotationStatus] = None) -> (
             List[DataAnnotationSegments], int):
         """Get segments by annotation ID."""
         query = self.db.query(DataAnnotationSegments).filter(DataAnnotationSegments.data_annotation_id == annotation_id,
                                                              DataAnnotationSegments.deleted_at == None,
                                                              DataAnnotationSegments.status == DataAnnotationStatus.COMPLETED)
         if status:
-            query = query.filter(DataAnnotationSegments.status == status)
+            query = query.filter(DataAnnotationSegments.status.in_(status))
         segments = query.order_by(DataAnnotationSegments.id).all()
         return segments, len(segments)
+
+    async def get_annotation_segment_by_rank(self, annotation_id: int, test_percent: float = 0.0,
+                                             status: DataAnnotationStatus = None,
+                                             segment_type: DataAnnotationSegmentType = DataAnnotationSegmentType.TRAIN,
+                                             ) -> List[DataAnnotationSegments]:
+        """Get segments by annotation ID and rank."""
+        query = self.db.query(DataAnnotationSegments).filter(DataAnnotationSegments.data_annotation_id == annotation_id,
+                                                             DataAnnotationSegments.segment_type == segment_type)
+        if status:
+            query = query.filter(DataAnnotationSegments.status == status)
+
+        if test_percent > 0:
+            query = query.filter(DataAnnotationSegments.segment_type == segment_type)
+            query = query.order_by(func.rand()).limit(int(test_percent * query.count()))
+            return query.all()
+        return query.order_by(func.rand()).all()
+
+    async def update_annotation_segment_type(self, segment_id: list[int],
+                                             segment_type: DataAnnotationSegmentType = DataAnnotationSegmentType.TEST):
+        """Update segment type."""
+        self.db.query(DataAnnotationSegments).filter(DataAnnotationSegments.id.in_(segment_id)).update(
+            {"segment_type": segment_type})
+        self.db.commit()
+        return

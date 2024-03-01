@@ -4,10 +4,6 @@ from starlette.exceptions import HTTPException
 
 from app.config.config import get_config
 
-# 假设的密钥和算法，你应该根据你的应用安全需求来设置这些值
-SECRET_KEY = "your_secret_key"
-ALGORITHM = "HS256"
-
 
 async def verify_jwt_token(token):
     try:

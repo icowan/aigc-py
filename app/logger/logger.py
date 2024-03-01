@@ -11,6 +11,19 @@ handler = None
 visited_loggers = set()
 
 
+def get_logger(logger_name: str = "", logger_filename: str = "app.log"):
+    logger = logging.getLogger(logger_name)
+    if not logger.handlers:
+        logger = build_logger(logger_name, logger_filename)
+    return logger
+
+
+def close_logger():
+    global handler
+    if handler:
+        handler.close()
+
+
 def build_logger(logger_name, logger_filename):
     global handler
 
@@ -100,4 +113,3 @@ class StreamToLogger(object):
             encoded_message = self.linebuf.encode("utf-8", "ignore").decode("utf-8")
             self.logger.log(self.log_level, encoded_message.rstrip())
         self.linebuf = ""
-

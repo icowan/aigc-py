@@ -5,6 +5,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, Form, UploadFile, File, HTTPException, Request
 from requests import Session
 
+from app.logger.logger import get_logger
 from app.models.base import get_db
 from app.models.datasets import Datasets, DatasetSegments
 from app.protocol.api_protocol import ErrorResponse, SuccessResponse, ErrorException
@@ -18,11 +19,13 @@ router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
+logger = get_logger("datasets")
+
 
 @router.post("/create", tags=["datasets"], description="Create a new dataset.")
-async def create_dataset(request: Request, name: str = Form(...), formatType: str = "txt", splitType: str = '\n\n',
-                         splitMax: int = 1000, remark: Optional[str] = Form(None), file: UploadFile = File(...),
-                         db: Session = Depends(get_db)):
+async def create_dataset(request: Request, name: str = Form(...), formatType: str = "txt",
+                         splitType: str = Form('\n\n'), splitMax: int = Form(1000), remark: Optional[str] = Form(None),
+                         file: UploadFile = File(...), db: Session = Depends(get_db)):
     store: Repository = get_repository(db)
     # store: Repository = request.state.store
 
@@ -39,6 +42,7 @@ async def create_dataset(request: Request, name: str = Form(...), formatType: st
 
     # 判断文件大小
     if file_size > max_file_size:
+        logger.warn(f"File size exceeds limit (100MB)." + f"file size: {file_size}")
         # 如果文件大于 100MB，返回错误
         raise HTTPException(status_code=413, detail="File size exceeds limit (100MB).")
 
@@ -59,8 +63,10 @@ async def create_dataset(request: Request, name: str = Form(...), formatType: st
             Datasets(name=name, segment_count=len(content_list), uuid=uid, remark=remark, format_type=formatType,
                      creator_email=creator_email,
                      tenant_id=tenant_id,
+                     split_type=splitType,
                      ))
     except Exception as e:
+        logger.error(f"Failed to create dataset: {e}")
         raise ErrorException(code=500, message=str(e))
 
     segment_list: List[DatasetSegments] = []
@@ -68,14 +74,25 @@ async def create_dataset(request: Request, name: str = Form(...), formatType: st
     for i, content in enumerate(content_list):
         if len(content.strip()) == 0:
             continue
+        if len(content.strip()) > splitMax:
+            logger.error(f"Segment {i} exceeds limit {splitMax}.")
+            raise HTTPException(status_code=400, detail=f"Segment {i} exceeds limit {splitMax}.")
         segment_list.append(
             DatasetSegments(uuid=f"segment-{uuid.uuid4()}", dataset_id=dataset.id, content=content,
                             word_count=len(content.split()), serial_number=sn))
         sn += 1
     try:
+        uid = f"dataset-{uuid.uuid4()}"
+        dataset = await store.datasets().create(
+            Datasets(name=name, segment_count=len(content_list), uuid=uid, remark=remark, format_type=formatType,
+                     creator_email=creator_email,
+                     tenant_id=tenant_id,
+                     split_type=splitType,
+                     ))
         await store.dataset_segments().add_segments(segment_list)
     except Exception as e:
         await store.datasets().delete(dataset, unscoped=True)
+        logger.error(f"Failed to create dataset: {e}")
         raise ErrorException(code=500, message=str(e))
 
     dataset.segment_count = len(segment_list)
@@ -91,9 +108,11 @@ async def delete_dataset(request: Request, datasetId: str, db: Session = Depends
 
     dataset = await store.datasets().find_by_uuid(tenant_id, datasetId)
     if dataset is None:
+        logger.warn(f"Dataset {datasetId} not found.")
         raise HTTPException(status_code=404, detail="Dataset not found.")
 
     if store.datasets().delete(dataset) is False:
+        logger.error(f"Failed to delete dataset {datasetId}.")
         raise HTTPException(status_code=500, detail="Failed to delete dataset.")
 
     return SuccessResponse()

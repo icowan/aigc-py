@@ -32,6 +32,17 @@ class Config(BaseSettings):
     """
     logger_dir: str = "./logs"  # Logger directory
 
+    """
+    Datasets configuration
+    """
+    datasets_device: str = "cpu"  # Device for datasets
+    datasets_model_name: str = "uer/sbert-base-chinese-nli"  # Model name for datasets
+
+    """
+    Storage configuration
+    """
+    storage_dir: str = "./storage"  # Storage directory
+
     model_config = SettingsConfigDict(env_file=".env", extra=Extra.allow)  # Configuration dictionary
 
 

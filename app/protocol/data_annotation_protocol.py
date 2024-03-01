@@ -3,6 +3,8 @@ from typing import List
 from fastapi import UploadFile, File
 from pydantic import BaseModel
 
+from app.core.datasets.datasets_model import MismatchedIntents, SimilarIntents
+
 
 class AnnotationCreateRequest(BaseModel):
     """The request model for creating an annotation."""
@@ -32,8 +34,8 @@ class DataAnnotationResponse(BaseModel):
     """The remark of the annotation."""
     annotationType: str
     """The type of the annotation."""
-    principal: str
-    """The principal of the annotation."""
+    operator: str
+    """The operator of the annotation."""
     status: str
     """The status of the annotation."""
     dataSequence: list[int] = [0, 0]
@@ -47,6 +49,13 @@ class DataAnnotationResponse(BaseModel):
     completed: int = 0
     """The completed of the annotation."""
     abandoned: int = 0
+    """The abandoned of the annotation."""
+    trainTotal: int = 0
+    """The train total of the annotation."""
+    testTotal: int = 0
+    """The test total of the annotation."""
+    testRepo: str = ""
+    """The test repo of the annotation."""
 
 
 class DataAnnotationsResponse(BaseModel):
@@ -89,6 +98,8 @@ class DataAnnotationSegmentResponse(BaseModel):
     """The output of the segment."""
     creatorEmail: str = ''
     """The creator email of the segment."""
+    index: int = 0
+    """The index of the segment."""
 
 
 class DataAnnotationSegmentMarkRequest(BaseModel):
@@ -104,3 +115,19 @@ class DataAnnotationSegmentMarkRequest(BaseModel):
     intent: str = None
     """The intent of the segment."""
     output: str = None
+
+
+class DataAnnotationSplitRequest(BaseModel):
+    """The request model for splitting an annotation."""
+    trainPercent: float = 1.0
+    """The train percent of the annotation."""
+    testPercent: float = 0.0
+    """The test percent of the annotation."""
+
+
+class DataAnnotationDetectResponse(BaseModel):
+    """The response model for detecting an annotation."""
+    mismatchedIntents: List[MismatchedIntents] = []
+    """The mismatched intents of the annotation."""
+    similarIntents: List[SimilarIntents] = []
+    """The similar intents of the annotation."""

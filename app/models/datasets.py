@@ -47,3 +47,4 @@ class DatasetSegments(Base):
     deleted_at = Column(DateTime, nullable=True, comment="删除时间")
 
     Datasets = relationship("Datasets", back_populates="Segments")
+    DataAnnotationSegments = relationship("DataAnnotationSegments", back_populates="Segments")

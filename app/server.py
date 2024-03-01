@@ -1,27 +1,20 @@
 import argparse
 import time
 from importlib import metadata
-from typing import Annotated
 
-from fastapi import Depends, FastAPI, Request, Response, HTTPException
+from jose import jwt, JWTError
+from fastapi import Depends, FastAPI, Request, Response, HTTPException, Security
 from fastapi.responses import RedirectResponse
-from langserve import APIHandler, add_routes
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware import Middleware
-from starlette.middleware.authentication import AuthenticationMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
-from langchain.chat_models import ChatAnthropic, ChatOpenAI
 
-from app.config.dependencies import get_query_token, get_token_header
+from app.config.config import get_config
+from app.logger.logger import get_logger
 from app.middleware.trace_middleware import TraceMiddleware
-# from app.middleware.jwt_middleware import JWTAuthenticationBackend
-from app.models.base import engine, Base, SessionLocal
+from app.models.base import engine, Base, SessionLocal, get_db
 from app.protocol.api_protocol import ErrorResponse
 from app.repository.repository import get_repository
-from app.routes import datasets, assistants, chat, models, data_annotation
-
-# from rag_conversation import chain as rag_conversation_chain
+from app.routes import datasets, data_annotation
 
 PYDANTIC_VERSION = metadata.version("pydantic")
 _PYDANTIC_MAJOR_VERSION: int = int(PYDANTIC_VERSION.split(".")[0])
@@ -36,43 +29,41 @@ app = FastAPI(
     ]
 )
 
+app_config = get_config()
+
+logger = get_logger("server")
+
+store = get_repository(SessionLocal)
+
+# security = HTTPBearer()
+
+
+# async def get_current_user(token: HTTPAuthorizationCredentials = Security(security)):
+#     try:
+#         payload = jwt.decode(token.credentials, app_config.app_secret_key, algorithms=["HS256"])
+#         email: str = payload.get("email")
+#         if email is None:
+#             raise HTTPException(status_code=403, detail="Could not validate credentials")
+#         return {"email": email}
+#     except JWTError:
+#         raise HTTPException(status_code=403, detail="Could not validate credentials")
+
+
 app.include_router(datasets.router, prefix="/mgr")
 app.include_router(data_annotation.router, prefix="/mgr")
 
-app.include_router(assistants.router, prefix="/v0")
-app.include_router(chat.router, prefix="/v0")
-app.include_router(models.router, prefix="/api/models")
+# app.include_router(assistants.router, prefix="/v0")
+# app.include_router(chat.router, prefix="/v0")
+# app.include_router(models.router, prefix="/api/models")
 
 Base.metadata.create_all(bind=engine)
-
-
-class CustomMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-
-        print(response)
-
-        # 确保我们只修改 JSON 响应
-        if isinstance(response, JSONResponse):
-            # 这里假设原始响应内容是 JSON 格式
-            original_data = response.body.decode("utf-8")
-
-            # 对原始响应内容进行处理，这里只是简单地添加了一些文本
-            modified_data = original_data + " - Modified by middleware"
-
-            # 创建一个新的响应对象来替换原始响应
-            new_response = Response(content=modified_data, media_type="application/json")
-
-            # 将新的响应对象返回给客户端
-            return new_response
-
-        # 如果不是 JSON 响应，直接返回原始响应
-        return response
 
 
 @app.middleware("http")
 async def add_process_time_header(request: Request, call_next):
     start_time = time.time()
+    # if not request.headers.get("Authorization") and request.headers.get("X-Token"):
+    #     request.headers["Authorization"] = request.headers["X-Token"]
     response = await call_next(request)
     process_time = time.time() - start_time
     response.headers["X-Process-Time"] = str(process_time)
@@ -84,15 +75,21 @@ async def add_auth_middleware(request: Request, call_next):
     auth = request.headers.get("Authorization")
     x_auth = request.headers.get("X-Token")
     if auth is None and x_auth is None:
-        return JSONResponse(status_code=401, content={"message": "Unauthorized"})
-    # db = request.state.db
-    # jwt = JWTAuthenticationBackend()
-    # user = jwt.authenticate(request, db)
-    # if user is None:
-    #     return JSONResponse(status_code=401, content={"message": "Unauthorized"})
-    # request.state.user = user
+        return ErrorResponse(message="Unauthorized", code=401)
+
+    # 优先取 auth 如果auth把x_auth赋给auth
+    token = auth if auth else x_auth
+    if token.startswith("Bearer "):
+        token = token.split(" ")[1]
+    # token = "Bearer " + token
+    try:
+        payload = jwt.decode(token, app_config.app_secret_key, algorithms=[app_config.app_algorithm])
+    except JWTError as e:
+        logger.warn(f"Unauthorized token: {token}, error_msg: {e}")
+        return ErrorResponse(message="Unauthorized", code=401)
+
     request.state.tenant_id = 1
-    request.state.email = "admin@admin.com"
+    request.state.email = payload.get("email")
     response = await call_next(request)
     return response
 
@@ -111,6 +108,7 @@ async def db_session_middleware(request: Request, call_next):
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    logger.warn(exc.detail)
     return JSONResponse(
         status_code=200,
         content=ErrorResponse(

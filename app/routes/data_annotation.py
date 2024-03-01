@@ -1,16 +1,25 @@
+import json
+import os
 import uuid
+import zipfile
 from datetime import datetime
 from typing import List, Type
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+from starlette.responses import FileResponse
 
+from app.config.config import get_config
+from app.core.datasets.datasets_model import QuestionIntent, DatasetsModel
+from app.logger.logger import get_logger
 from app.models.base import get_db
-from app.models.data_annotation import DataAnnotation, DataAnnotationSegments, DataAnnotationStatus, DataAnnotationType
+from app.models.data_annotation import DataAnnotation, DataAnnotationSegments, DataAnnotationStatus, DataAnnotationType, \
+    DataAnnotationSegmentType
 from app.models.datasets import Datasets
 from app.protocol.api_protocol import SuccessResponse
 from app.protocol.data_annotation_protocol import DataAnnotationResponse, AnnotationCreateRequest, \
-    DataAnnotationsResponse, DataAnnotationSegmentResponse, DataAnnotationSegmentMarkRequest
+    DataAnnotationsResponse, DataAnnotationSegmentResponse, DataAnnotationSegmentMarkRequest, \
+    DataAnnotationSplitRequest, DataAnnotationDetectResponse, MismatchedIntents, SimilarIntents
 from app.repository.repository import get_repository, Repository
 
 router = APIRouter(
@@ -20,32 +29,117 @@ router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
+logger = get_logger("annotation")
+
+# 从配置文件中获取模型名称和设备
+# TODO: 可能会有个问题，多个进程的时候，这个模型会被多次加载，会不会有问题？
+datasets_model = DatasetsModel(get_config().datasets_model_name, get_config().datasets_device)
+
+
+def write_segments_to_file(segments: List[DataAnnotationSegments], file_path: str, format_type: str):
+    with open(file_path, 'w', encoding='utf-8', newline='') as file:
+        for segment in segments:
+            messages = [{
+                "role": "system",
+                "content": segment.input
+            }, {
+                "role": "user",
+                "content": segment.question
+            }, {
+                "role": "assistant",
+                "content": segment.output
+            }]
+            file.write(json.dumps({"messages": messages}, ensure_ascii=False) + "\n")
+
+
+# 将标注数据拆分成训练集和测试集
+@router.post("/task/{annotationId}/split", tags=["annotation"], description="将标注数据拆分成训练集和测试集")
+async def split_annotation(request: Request, annotationId: str, req: DataAnnotationSplitRequest,
+                           db: Session = Depends(get_db)):
+    tenant_id = request.state.tenant_id
+    store: Repository = get_repository(db)
+    data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=False)
+    if not data_annotation:
+        logger.warn(f"Annotation not found: {annotationId}")
+        raise HTTPException(status_code=404, detail="Annotation not found.")
+
+    if data_annotation.status != DataAnnotationStatus.COMPLETED:
+        logger.warn(f"The annotation task is not completed, cannot be split: {annotationId}")
+        raise HTTPException(status_code=400, detail="The annotation task is not completed, cannot be split.")
+
+    if req.testPercent <= 0 or req.testPercent >= 1:
+        logger.warn(f"The test percent must be between 0 and 1: {req.testPercent}")
+        raise HTTPException(status_code=400, detail="The test percent must be between 0 and 1.")
+
+    # 根据比例随机取出相应条数据更新成测试集
+    segments: List[DataAnnotationSegments] = await store.data_annotation().get_annotation_segment_by_rank(
+        data_annotation.id,
+        status=DataAnnotationStatus.COMPLETED,
+        test_percent=req.testPercent)
+
+    segment_ids: List[int] = [segment.id for segment in segments]
+    try:
+        await store.data_annotation().update_annotation_segment_type(segment_ids, DataAnnotationSegmentType.TEST)
+    except Exception as e:
+        logger.error(f"Split annotation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Split annotation failed: {e}")
+
+    data_annotation.test_total = len(segment_ids)
+    data_annotation.train_total = data_annotation.total - data_annotation.test_total
+    await store.data_annotation().update_data_annotation(data_annotation.id, data_annotation)
+
+    return SuccessResponse()
+
 
 # 导出标注后的数据
-@router.get("/task/{annotationId}/export/{segmentType}", tags=["annotation"], description="导出标注任务数据")
-async def export_annotation(request: Request, annotationId: str, segmentType: str = 'all',
+@router.get("/task/{annotationId}/export", tags=["annotation"], description="导出标注任务数据")
+async def export_annotation(request: Request, annotationId: str, format_type: str = 'conversation',
                             db: Session = Depends(get_db)):
     tenant_id = request.state.tenant_id
     store: Repository = get_repository(db)
     data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=False)
     if not data_annotation:
+        logger.warn(f"Annotation not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
     if data_annotation.status != DataAnnotationStatus.COMPLETED:
+        logger.warn(f"The annotation task is not completed, cannot be exported: {annotationId}")
         raise HTTPException(status_code=400, detail="The annotation task is not completed, cannot be exported.")
 
-    if segmentType != 'all':
-        segments = await store.data_annotation().get_annotation_segments(data_annotation.id,
-                                                                         status=DataAnnotationStatus(
-                                                                             segmentType.upper()))
-    else:
-        segments: List[DataAnnotationSegments] = await store.data_annotation().get_annotation_segments(
-            data_annotation.id)
+    segments, total = await store.data_annotation().get_annotation_segments(data_annotation.id,
+                                                                            status=[
+                                                                                DataAnnotationStatus.COMPLETED])
+    if not segments:
+        logger.warn(f"Segments not found: {annotationId}")
+        raise HTTPException(status_code=404, detail="Segments not found.")
 
-    for segment in segments:
-        print(segment.segment_content)
+    train_segments = [s for s in segments if
+                      DataAnnotationSegmentType(s.segment_type) == DataAnnotationSegmentType.TRAIN]
+    test_segments = [s for s in segments if
+                     DataAnnotationSegmentType(s.segment_type) != DataAnnotationSegmentType.TRAIN]
 
-    return SuccessResponse()
+    storage_dir = get_config().storage_dir
+    os.makedirs(f"{storage_dir}/temp_files", exist_ok=True)
+    train_file = f"{storage_dir}/{data_annotation.uuid}-train.jsonl"
+    test_file = f"{storage_dir}/{data_annotation.uuid}-test.jsonl"
+
+    # 使用函数来减少重复代码
+    write_segments_to_file(train_segments, train_file, format_type)
+    if test_segments:
+        write_segments_to_file(test_segments, test_file, format_type)
+
+    zip_filename = f"{storage_dir}/temp_files/{data_annotation.uuid}-files.zip"
+    with zipfile.ZipFile(zip_filename, 'w') as zipf:
+        zipf.write(train_file, arcname=os.path.basename(train_file))
+        if test_segments:
+            zipf.write(test_file, arcname=os.path.basename(test_file))
+
+    # 清理临时文件
+    os.remove(train_file)
+    if test_segments:
+        os.remove(test_file)
+
+    return FileResponse(path=zip_filename, filename=f"{data_annotation.uuid}-train.zip", media_type='application/zip')
 
 
 @router.delete("/task/{annotationId}/delete", tags=["annotation"], description="删除标注任务")
@@ -54,16 +148,19 @@ async def delete_annotation(request: Request, annotationId: str, db: Session = D
     store: Repository = get_repository(db)
     data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=False)
     if not data_annotation:
+        logger.warn(f"Annotation not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
     status = DataAnnotationStatus(data_annotation.status)
     if status != DataAnnotationStatus.COMPLETED and status != DataAnnotationStatus.CLEANED:
+        logger.warn(f"The annotation task is not completed or cleaned, cannot be deleted: {annotationId}")
         raise HTTPException(status_code=400,
                             detail="The annotation task is not completed or cleaned, cannot be deleted.")
 
     try:
         await store.data_annotation().delete(data_annotation.id)
     except Exception as e:
+        logger.error(f"Delete annotation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Delete annotation failed: {e}")
 
     return SuccessResponse()
@@ -75,6 +172,7 @@ async def annotation_info(request: Request, annotationId: str, db: Session = Dep
     store: Repository = get_repository(db)
     data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=True)
     if not data_annotation:
+        logger.warn(f"Annotation not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
     return SuccessResponse(
@@ -82,7 +180,7 @@ async def annotation_info(request: Request, annotationId: str, db: Session = Dep
                                     name=data_annotation.name,
                                     remark=str(data_annotation.remark),
                                     annotationType=data_annotation.annotation_type,
-                                    principal=data_annotation.principal,
+                                    operator=data_annotation.principal,
                                     status=data_annotation.status,
                                     dataSequence=list(map(int, data_annotation.data_sequence.split("-"))),
                                     total=data_annotation.total, createdAt=str(data_annotation.created_at),
@@ -97,9 +195,11 @@ async def clean_annotation(request: Request, annotationId: str, db: Session = De
     store: Repository = get_repository(db)
     data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=False)
     if not data_annotation:
+        logger.warn(f"Annotation not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
     if data_annotation.status != DataAnnotationStatus.PENDING and data_annotation.status != DataAnnotationStatus.PROCESSING:
+        logger.warn(f"The annotation task is not pending or processing, cannot be cleaned: {annotationId}")
         raise HTTPException(status_code=400, detail="The annotation task is not pending, cannot be cleaned.")
 
     data_annotation.status = DataAnnotationStatus.CLEANED
@@ -108,6 +208,7 @@ async def clean_annotation(request: Request, annotationId: str, db: Session = De
     try:
         await store.data_annotation().update_data_annotation(data_annotation.id, data_annotation)
     except Exception as e:
+        logger.error(f"Clean annotation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Clean annotation failed: {e}")
 
     return SuccessResponse()
@@ -119,9 +220,11 @@ async def create_annotation(request: Request, req: AnnotationCreateRequest, db: 
     store: Repository = get_repository(db)
     dataset: Datasets = await store.datasets().find_by_uuid(tenant_id, req.datasetId)
     if not dataset:
+        logger.warn(f"Dataset not found: {req.datasetId}")
         raise HTTPException(status_code=400, detail="Dataset not found.")
 
     if len(req.dataSequence) != 2:
+        logger.warn(f"Data sequence must be a list of two integers: {req.dataSequence}")
         raise HTTPException(status_code=400, detail="Data sequence must be a list of two integers.")
 
     data_sequence = "-".join(map(str, req.dataSequence))
@@ -130,6 +233,7 @@ async def create_annotation(request: Request, req: AnnotationCreateRequest, db: 
     segments = await store.dataset_segments().get_by_dataset_id_and_sn(dataset.id, req.dataSequence[0],
                                                                        req.dataSequence[1])
     if not segments:
+        logger.warn(f"Segments not found: {req.dataSequence}")
         raise HTTPException(status_code=400, detail="Segments not found.")
 
     annotation_segments: List[DataAnnotationSegments] = []
@@ -142,6 +246,7 @@ async def create_annotation(request: Request, req: AnnotationCreateRequest, db: 
                            data_sequence=data_sequence,
                            total=total))
     except Exception as e:
+        logger.error(f"Create annotation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Create annotation failed: {e}")
 
     for segment in segments:
@@ -154,12 +259,13 @@ async def create_annotation(request: Request, req: AnnotationCreateRequest, db: 
         # 将数据集里的内容放到标注任务里
         await store.data_annotation().add_annotation_segments(annotation_segments)
     except Exception as e:
+        logger.error(f"Create annotation segments failed: {e}")
         await store.data_annotation().delete(data_annotation.id)
         raise HTTPException(status_code=500, detail=f"Create annotation segments failed: {e}")
 
     return SuccessResponse(data=DataAnnotationResponse(uuid=data_annotation.uuid, name=data_annotation.name,
                                                        annotationType=data_annotation.annotation_type,
-                                                       principal=data_annotation.principal,
+                                                       operator=data_annotation.principal,
                                                        status=data_annotation.status,
                                                        createdAt=str(data_annotation.created_at),
                                                        dataSequence=list(
@@ -181,13 +287,14 @@ async def list_annotation(request: Request, status: str = None, page: int = 1, p
             DataAnnotationResponse(uuid=annotation.uuid, datasetName=annotation.Datasets.name, name=annotation.name,
                                    remark=str(annotation.remark),
                                    annotationType=annotation.annotation_type,
-                                   principal=annotation.principal,
+                                   operator=annotation.principal,
                                    status=annotation.status,
                                    dataSequence=list(map(int, annotation.data_sequence.split("-"))),
                                    total=annotation.total, createdAt=str(annotation.created_at),
                                    completedAt=str(annotation.completed_at),
                                    completed=annotation.completed,
-                                   abandoned=annotation.abandoned))
+                                   abandoned=annotation.abandoned, trainTotal=annotation.train_total,
+                                   testTotal=annotation.test_total))
 
     return SuccessResponse(
         data=DataAnnotationsResponse(list=result_list, total=total, page=page, pageSize=page_size))
@@ -199,16 +306,20 @@ async def annotation_segment_next(request: Request, annotationId: str, db: Sessi
     store: Repository = get_repository(db)
     data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=False)
     if not data_annotation:
+        logger.warn(f"Annotation not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
     if data_annotation.status != DataAnnotationStatus.PENDING and data_annotation.status != DataAnnotationStatus.PROCESSING:
+        logger.warn(f"The annotation task is not pending or processing, cannot be annotated: {annotationId}")
         raise HTTPException(status_code=400,
                             detail="The annotation task is not pending or processing, cannot be annotated.")
 
     # 根据sn号获取标注记录
     annotation_segment_info = await store.data_annotation().get_annotation_one_segment(data_annotation.id,
-                                                                                       status=DataAnnotationStatus.PENDING)
+                                                                                       status=DataAnnotationStatus.PENDING,
+                                                                                       segment=True)
     if not annotation_segment_info:
+        logger.warn(f"Segment not found: {annotationId}")
         return SuccessResponse(data=None)
 
     return SuccessResponse(
@@ -221,6 +332,7 @@ async def annotation_segment_next(request: Request, annotationId: str, db: Sessi
         input=annotation_segment_info.input, question=annotation_segment_info.question,
         intent=annotation_segment_info.intent, output=annotation_segment_info.output,
         creatorEmail=annotation_segment_info.creator_email,
+        index=annotation_segment_info.Segments.serial_number
     )
 
 
@@ -230,15 +342,18 @@ async def annotation_segment_next(request: Request, annotationId: str, segmentId
     store: Repository = get_repository(db)
     data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=False)
     if not data_annotation:
+        logger.warn(f"Annotation not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
     if data_annotation.status != DataAnnotationStatus.PENDING:
+        logger.warn(f"The annotation task is not pending, cannot be annotated: {annotationId}")
         raise HTTPException(status_code=400, detail="The annotation task is not pending, cannot be annotated.")
 
     # 根据sn号获取标注记录
     annotation_segment_info = await store.data_annotation().get_annotation_segment_by_uuid(data_annotation.id,
                                                                                            segmentId)
     if not annotation_segment_info:
+        logger.warn(f"Segment not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Segment not found.")
 
     return SuccessResponse(
@@ -260,14 +375,17 @@ async def annotation_segment_get(request: Request, annotationId: str, index: int
     store: Repository = get_repository(db)
     data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=False)
     if not data_annotation:
+        logger.warn(f"Annotation not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
     if data_annotation.status != DataAnnotationStatus.PENDING:
+        logger.warn(f"The annotation task is not pending, cannot be annotated: {annotationId}")
         raise HTTPException(status_code=400, detail="The annotation task is not pending, cannot be annotated.")
 
     # 根据sn号获取标注记录
     annotation_segment_info = await store.data_annotation().get_annotation_one_segment(data_annotation.id, index)
     if not annotation_segment_info:
+        logger.warn(f"Segment not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Segment not found.")
 
     return SuccessResponse(
@@ -292,11 +410,13 @@ async def annotation_mark(request: Request, annotationId: str, annotationSegment
     store: Repository = get_repository(db)
     data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=False)
     if not data_annotation:
+        logger.warn(f"Annotation not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
     segment: DataAnnotationSegments = await store.data_annotation().get_annotation_segment_by_uuid(data_annotation.id,
                                                                                                    annotationSegmentId)
     if not segment:
+        logger.warn(f"Segment not found: {annotationSegmentId}")
         raise HTTPException(status_code=404, detail="Segment not found.")
 
     segment.creator_email = email
@@ -311,8 +431,10 @@ async def annotation_mark(request: Request, annotationId: str, annotationSegment
 
     try:
         data_annotation.completed = data_annotation.completed + 1
+        data_annotation.train_total = data_annotation.train_total + 1
         await store.data_annotation().update_annotation_segment(data_annotation, segment)
     except Exception as e:
+        logger.error(f"Mark annotation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Mark annotation failed: {e}")
 
     return SuccessResponse()
@@ -328,10 +450,12 @@ async def abandoned_annotation(request: Request, annotationId: str, annotationSe
 
     data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, datasets=False)
     if not data_annotation:
+        logger.warn(f"Annotation not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
     segment = await store.data_annotation().get_annotation_segment_by_uuid(data_annotation.id, annotationSegmentId)
     if not segment:
+        logger.warn(f"Segment not found: {annotationSegmentId}")
         raise HTTPException(status_code=404, detail="Segment not found.")
 
     segment.status = DataAnnotationStatus.ABANDONED
@@ -342,6 +466,7 @@ async def abandoned_annotation(request: Request, annotationId: str, annotationSe
         data_annotation.abandoned = data_annotation.abandoned + 1
         await store.data_annotation().update_annotation_segment(data_annotation, segment)
     except Exception as e:
+        logger.error(f"Abandoned annotation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Mark annotation failed: {e}")
 
     return SuccessResponse()
@@ -353,39 +478,42 @@ async def detect_annotation(request: Request, annotationId: str, db: Session = D
     store: Repository = get_repository(db)
     data_annotation = await store.data_annotation().get_by_uuid(tenant_id=tenant_id, uid=annotationId, segments=True)
     if not data_annotation:
+        logger.warn(f"Annotation not found: {annotationId}")
         raise HTTPException(status_code=404, detail="Annotation not found.")
 
     if data_annotation.status != DataAnnotationStatus.COMPLETED:
+        logger.warn(f"The annotation task is not completed: {annotationId}")
         raise HTTPException(status_code=400, detail="The annotation task is not completed.")
 
+    # SBERT模型进行文本相似度比较
     # 获取所有已标注后的内容
     if DataAnnotationType(data_annotation.annotation_type) == DataAnnotationType.FAQ:
         # 获取所有已标注后的内容
-        all_query = []
-        all_intents = []
-        all_answers = []
-        indices = []
-        i = 0
+        eval_data: List[QuestionIntent] = []
         for segment in data_annotation.Segments:
-            questions = segment.input[1:-1].split(',')
-            questions = [q.strip() for q in questions]
-            intents = segment.intent
-            answers = segment.output
-            for q in questions:
-                all_query.append(q)
-            for _ in range(len(questions)):
-                all_intents.append(intents)
-                all_answers.append(answers)
-                indices.append(i)
-            i += 1
+            eval_data.append(QuestionIntent(input=segment.input, intent=segment.intent, output=segment.output))
 
-        # SBERT模型进行文本相似度比较
-        # model = SentenceTransformer(model_path)
-        # sentence_embeddings = model.encode(all_query)
-        # cosine_score = cosine_similarity(sentence_embeddings)
-        # similar_indices = np.argwhere(cosine_score >= similarity_threshold)
+        try:
+            eval_result = await datasets_model.analyze_similar_questions_and_intents(data=eval_data)
+            # 保存检测结果
+            data_annotation.test_repo = json.dumps([item.dict() for item in eval_data], ensure_ascii=False)
+        except Exception as e:
+            logger.warn(f"Detect annotation failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Detect annotation failed: {e}")
+    else:
+        logger.info(f"Annotation type not supported: {data_annotation.annotation_type}")
+        raise HTTPException(status_code=400, detail="Annotation type not supported.")
+
+    try:
+        await store.data_annotation().update_data_annotation(data_annotation.id, data_annotation)
+    except Exception as e:
+        logger.error(f"Detect annotation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Detect annotation failed: {e}")
 
     # 根据标内容的类型生成对应的文件
     # 异步调用模型对内容进行检测
 
-    return SuccessResponse(data=True)
+    return SuccessResponse(data=DataAnnotationDetectResponse(
+        similarIntents=eval_result.similarIntents,
+        mismatchedIntents=eval_result.mismatchedIntents
+    ))

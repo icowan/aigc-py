@@ -70,3 +70,7 @@ class DatasetsRepository:
         self.db.query(Datasets).filter(Datasets.id == id).update(update_data)
         self.db.commit()
         return await self.get(id)
+
+    async def get(self, id: int) -> Datasets:
+        """Get a dataset by ID."""
+        return self.db.query(Datasets).filter(Datasets.id == id).first()
